@@ -185,15 +185,16 @@ ${cnsContent}
         addLog("Response received. Parsing generated code...");
 
         const cmdMatch = text.match(/---BEGIN CMD INJECTION---([\s\S]*?)---END CMD INJECTION---/);
-        const cnsMatch = text.match(/---BEGIN CNS APPEND---([\s\S]*?)---END CNS APPEND---/);
+        const cnsInjectionMatch = text.match(/---BEGIN CNS INJECTION---([\s\S]*?)---END CNS INJECTION---/);
+        const cnsHelpersMatch = text.match(/---BEGIN CNS HELPERS---([\s\S]*?)---END CNS HELPERS---/);
 
-        if (!cmdMatch || !cnsMatch) {
+        if (!cmdMatch || (!cnsInjectionMatch && !cnsHelpersMatch)) {
           throw new Error("Failed to parse AI response. The model output format was unexpected.");
         }
 
         const cmdInjection = cmdMatch[1].trim();
-        const cnsInjection = text.match(/---BEGIN CNS INJECTION---([\s\S]*?)---END CNS INJECTION---/)?.[1]?.trim() || "";
-        const cnsHelpers = text.match(/---BEGIN CNS HELPERS---([\s\S]*?)---END CNS HELPERS---/)?.[1]?.trim() || "";
+        const cnsInjection = cnsInjectionMatch?.[1]?.trim() || "";
+        const cnsHelpers = cnsHelpersMatch?.[1]?.trim() || "";
 
         // Set generated content for preview
         setGeneratedCmd(cmdInjection);
