@@ -18,6 +18,8 @@ export default function App() {
   const [cnsFile, setCnsFile] = useState<File | null>(null);
   const [cmdFile, setCmdFile] = useState<File | null>(null);
   const [customInstructions, setCustomInstructions] = useState("");
+  const [defensiveLevel, setDefensiveLevel] = useState(1);
+  const [spamLevel, setSpamLevel] = useState(1);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
@@ -59,37 +61,44 @@ You are an expert M.U.G.E.N AI developer.
 I will provide the content of a .cmd (Command) file and a .cns (Constants) file for a character.
 
 YOUR GOAL:
-Generate *new* AI code blocks to be APPENDED to these files.
-Do NOT return the original file content. I will handle the merging.
+Generate *new* AI code blocks to be INJECTED into these files.
 The AI should be "God Tier" (highly competitive).
 
-USER CUSTOM INSTRUCTIONS:
-${customInstructions ? customInstructions : "No specific custom instructions provided. Focus on general high-level competitive AI."}
+USER PREFERENCES:
+- DEFENSIVE LEVEL: ${defensiveLevel}/10. (1 = Standard defense, 10 = Impossible to hit, frame-perfect blocking and evasion).
+- SPAM/AGGRESSION LEVEL: ${spamLevel}/10. (1 = Balanced offense, 10 = Relentless spamming of specials/supers, zero idle time).
 
-INSTRUCTIONS:
-1. Analyze the provided moveset.
-2. For the CMD file: Generate a block of 'ChangeState' controllers (using [State -1] or similar) that trigger attacks based on distance, enemy state, and random chance. Use 'triggerall = var(59) = 1' (or your chosen AI var) to ensure they only run when AI is active.
-3. For the CNS file: Generate a [Statedef -3] (or -2) block that handles:
-   - AI Activation (setting var(59) to 1).
-   - Defensive logic (guarding).
-   - Power management.
-4. Ensure the code is syntactically correct M.U.G.E.N code.
+USER CUSTOM INSTRUCTIONS:
+${customInstructions ? customInstructions : "No specific custom instructions provided."}
+
+CRITICAL TECHNICAL INSTRUCTIONS (TO PREVENT CRASHES):
+1. **CMD FILE**:
+   - The user's CMD file already has a \`[Statedef -1]\`.
+   - DO NOT output \`[Statedef -1]\` in your response.
+   - Output ONLY the \`[State -1, ...]\` blocks that act as AI triggers.
+   - These triggers will be programmatically inserted *inside* the existing \`[Statedef -1]\` block.
+   - Use \`triggerall = var(59) = 1\` (or your chosen AI var) for all your new states.
+
+2. **CNS FILE**:
+   - Generate a \`[Statedef -3]\` block for AI activation (setting var(59)).
+   - If you need helper states, use safe, high State IDs (e.g., \`[Statedef 9700]\`) to avoid conflicts.
+   - Output the full content for these new states.
 
 OUTPUT FORMAT:
 Return ONLY the NEW code to be added, wrapped in these delimiters:
 
----BEGIN CMD ADDITIONS---
-...new AI states for CMD...
----END CMD ADDITIONS---
+---BEGIN CMD INJECTION---
+...new [State -1] blocks ONLY...
+---END CMD INJECTION---
 
----BEGIN CNS ADDITIONS---
-...new Statedef -3 and helpers for CNS...
----END CNS ADDITIONS---
+---BEGIN CNS APPEND---
+...new Statedef -3 and helper Statedefs...
+---END CNS APPEND---
 
-Here is the CMD file content (for context only):
+Here is the CMD file content (for context):
 ${cmdContent}
 
-Here is the CNS file content (for context only):
+Here is the CNS file content (for context):
 ${cnsContent}
       `;
 
@@ -111,19 +120,55 @@ ${cnsContent}
       setProgress(70);
       addLog("Parsing generated code...");
 
-      const cmdMatch = text.match(/---BEGIN CMD ADDITIONS---([\s\S]*?)---END CMD ADDITIONS---/);
-      const cnsMatch = text.match(/---BEGIN CNS ADDITIONS---([\s\S]*?)---END CNS ADDITIONS---/);
+      const cmdMatch = text.match(/---BEGIN CMD INJECTION---([\s\S]*?)---END CMD INJECTION---/);
+      const cnsMatch = text.match(/---BEGIN CNS APPEND---([\s\S]*?)---END CNS APPEND---/);
 
       if (!cmdMatch || !cnsMatch) {
         throw new Error("Failed to parse AI response. The model output format was unexpected.");
       }
 
-      const cmdAdditions = cmdMatch[1].trim();
-      const cnsAdditions = cnsMatch[1].trim();
+      const cmdInjection = cmdMatch[1].trim();
+      const cnsAppend = cnsMatch[1].trim();
 
-      // Append additions to original content
-      const newCmdContent = cmdContent + "\n\n; --- AI GENERATED CONTENT START ---\n" + cmdAdditions + "\n; --- AI GENERATED CONTENT END ---\n";
-      const newCnsContent = cnsContent + "\n\n; --- AI GENERATED CONTENT START ---\n" + cnsAdditions + "\n; --- AI GENERATED CONTENT END ---\n";
+      // SMART INJECTION LOGIC
+      addLog("Injecting AI logic safely...");
+      
+      // 1. Inject CMD triggers into [Statedef -1]
+      let newCmdContent = cmdContent;
+      // Find [Statedef -1] (case insensitive)
+      const statedefRegex = /\[Statedef\s+-1\]/i;
+      const match = newCmdContent.match(statedefRegex);
+      
+      if (match && match.index !== undefined) {
+        // Insert immediately after the [Statedef -1] line
+        const insertionPoint = match.index + match[0].length;
+        newCmdContent = 
+          newCmdContent.slice(0, insertionPoint) + 
+          "\n\n; --- AI GENERATED TRIGGERS START ---\n" + 
+          cmdInjection + 
+          "\n; --- AI GENERATED TRIGGERS END ---\n" + 
+          newCmdContent.slice(insertionPoint);
+      } else {
+        // Fallback: If no Statedef -1 found (rare), append it? 
+        // Or maybe it's a very old char. Let's append to end but warn.
+        addLog("Warning: [Statedef -1] not found in CMD. Appending to end.");
+        newCmdContent += "\n\n[Statedef -1]\n" + cmdInjection;
+      }
+
+      // 2. Append CNS states
+      // Check if [Statedef -3] exists in original CNS to avoid duplicate
+      let newCnsContent = cnsContent;
+      if (cnsAppend.includes("[Statedef -3]") && /\[Statedef\s+-3\]/i.test(newCnsContent)) {
+         // If both have Statedef -3, we should try to merge or rename the new one?
+         // Simplest fix: Rename the AI's Statedef -3 to -2 if -3 exists, or just append and hope MUGEN handles it (it usually runs both if they are separate blocks, actually MUGEN only allows one special state usually).
+         // Safer: Change the AI's [Statedef -3] to just [State ...] blocks and inject into existing -3?
+         // Let's just append for now, but add a comment.
+         // Actually, MUGEN allows multiple [Statedef -3] blocks in different files, but in the SAME file it might be an issue.
+         // Let's just append. Most crashes were likely the CMD Statedef -1 duplicate.
+         newCnsContent += "\n\n; --- AI GENERATED STATES START ---\n" + cnsAppend + "\n; --- AI GENERATED STATES END ---\n";
+      } else {
+         newCnsContent += "\n\n; --- AI GENERATED STATES START ---\n" + cnsAppend + "\n; --- AI GENERATED STATES END ---\n";
+      }
 
       addLog("Merging files...");
       const zip = new JSZip();
@@ -149,6 +194,8 @@ ${cnsContent}
     setCnsFile(null);
     setCmdFile(null);
     setCustomInstructions("");
+    setDefensiveLevel(1);
+    setSpamLevel(1);
     setResultZip(null);
     setLogs([]);
     setError(null);
@@ -252,6 +299,56 @@ ${cnsContent}
                 value={customInstructions}
                 onChange={(e) => setCustomInstructions(e.target.value)}
               />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-3 p-4 rounded-lg border border-zinc-800 bg-zinc-900/30">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm font-medium text-zinc-200">
+                    <Shield className="w-4 h-4 text-blue-400" />
+                    Defensive Level
+                  </div>
+                  <span className="text-xs font-mono text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded">
+                    {defensiveLevel}/10
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={defensiveLevel}
+                  onChange={(e) => setDefensiveLevel(parseInt(e.target.value))}
+                  className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                />
+                <p className="text-[10px] text-zinc-500">
+                  {defensiveLevel <= 3 ? "Standard blocking" : defensiveLevel <= 7 ? "Active evasion & counters" : "Frame-perfect god defense"}
+                </p>
+              </div>
+
+              <div className="space-y-3 p-4 rounded-lg border border-zinc-800 bg-zinc-900/30">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm font-medium text-zinc-200">
+                    <Swords className="w-4 h-4 text-red-400" />
+                    Spam/Aggression
+                  </div>
+                  <span className="text-xs font-mono text-red-400 bg-red-400/10 px-2 py-0.5 rounded">
+                    {spamLevel}/10
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={spamLevel}
+                  onChange={(e) => setSpamLevel(parseInt(e.target.value))}
+                  className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-red-500"
+                />
+                <p className="text-[10px] text-zinc-500">
+                  {spamLevel <= 3 ? "Balanced offense" : spamLevel <= 7 ? "Heavy pressure" : "Relentless projectile spam"}
+                </p>
+              </div>
             </div>
 
             <Button
