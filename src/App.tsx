@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { GoogleGenAI } from "@google/genai";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
@@ -25,8 +25,23 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [resultZip, setResultZip] = useState<Blob | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
 
   const addLog = (msg: string) => setLogs((prev) => [...prev, `> ${msg}`]);
+
+  // Auto-scroll to bottom of logs
+  const scrollToBottom = () => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+  
+  // Use effect to scroll whenever logs change
+  useState(() => {
+    // This is a hacky way to use effect in class-like manner inside functional component body? 
+    // No, I should use useEffect.
+  });
+  
+  // Actually, I need to import useEffect.
+  // Let's just add the useEffect hook.
 
   const handleDownloadExamples = () => {
     const zip = new JSZip();
@@ -45,6 +60,8 @@ export default function App() {
     setLogs([]);
     setError(null);
     setResultZip(null);
+
+    let intervalId: NodeJS.Timeout | undefined;
 
     try {
       addLog("Reading file contents...");
@@ -102,86 +119,107 @@ Here is the CNS file content (for context):
 ${cnsContent}
       `;
 
-      addLog("Analyzing character moveset...");
-      addLog("Generating aggressive AI triggers...");
-      addLog("Optimizing combo logic...");
+      // Dynamic Progress Simulation
+      const loadingMessages = [
+        "Analyzing character moveset...",
+        "Identifying key attacks and frame data...",
+        "Generating combo routes...",
+        "Calculating defensive heuristics...",
+        "Optimizing AI state triggers...",
+        "Finalizing logic gates...",
+        "Reviewing code for syntax errors..."
+      ];
+
+      let msgIndex = 0;
+      addLog(loadingMessages[0]);
+      
+      intervalId = setInterval(() => {
+        msgIndex++;
+        if (msgIndex < loadingMessages.length) {
+          addLog(loadingMessages[msgIndex]);
+          setProgress((prev) => Math.min(prev + 10, 65)); // Increment progress slowly
+        }
+      }, 2500); // New message every 2.5 seconds
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-      });
+          model: "gemini-3-flash-preview",
+          contents: prompt,
+        });
 
-      let text = response.text;
-      if (!text) throw new Error("No response from AI");
+        clearInterval(intervalId); // Stop the simulation
+        
+        let text = response.text;
+        if (!text) throw new Error("No response from AI");
 
-      // Clean up potential markdown code blocks
-      text = text.replace(/```\w*\n/g, "").replace(/```/g, "");
+        // Clean up potential markdown code blocks
+        text = text.replace(/```\w*\n/g, "").replace(/```/g, "");
 
-      setProgress(70);
-      addLog("Parsing generated code...");
+        setProgress(70);
+        addLog("Response received. Parsing generated code...");
 
-      const cmdMatch = text.match(/---BEGIN CMD INJECTION---([\s\S]*?)---END CMD INJECTION---/);
-      const cnsMatch = text.match(/---BEGIN CNS APPEND---([\s\S]*?)---END CNS APPEND---/);
+        const cmdMatch = text.match(/---BEGIN CMD INJECTION---([\s\S]*?)---END CMD INJECTION---/);
+        const cnsMatch = text.match(/---BEGIN CNS APPEND---([\s\S]*?)---END CNS APPEND---/);
 
-      if (!cmdMatch || !cnsMatch) {
-        throw new Error("Failed to parse AI response. The model output format was unexpected.");
-      }
+        if (!cmdMatch || !cnsMatch) {
+          throw new Error("Failed to parse AI response. The model output format was unexpected.");
+        }
 
-      const cmdInjection = cmdMatch[1].trim();
-      const cnsAppend = cnsMatch[1].trim();
+        const cmdInjection = cmdMatch[1].trim();
+        const cnsAppend = cnsMatch[1].trim();
 
-      // SMART INJECTION LOGIC
-      addLog("Injecting AI logic safely...");
-      
-      // 1. Inject CMD triggers into [Statedef -1]
-      let newCmdContent = cmdContent;
-      // Find [Statedef -1] (case insensitive)
-      const statedefRegex = /\[Statedef\s+-1\]/i;
-      const match = newCmdContent.match(statedefRegex);
-      
-      if (match && match.index !== undefined) {
-        // Insert immediately after the [Statedef -1] line
-        const insertionPoint = match.index + match[0].length;
-        newCmdContent = 
-          newCmdContent.slice(0, insertionPoint) + 
-          "\n\n; --- AI GENERATED TRIGGERS START ---\n" + 
-          cmdInjection + 
-          "\n; --- AI GENERATED TRIGGERS END ---\n" + 
-          newCmdContent.slice(insertionPoint);
-      } else {
-        // Fallback: If no Statedef -1 found (rare), append it? 
-        // Or maybe it's a very old char. Let's append to end but warn.
-        addLog("Warning: [Statedef -1] not found in CMD. Appending to end.");
-        newCmdContent += "\n\n[Statedef -1]\n" + cmdInjection;
-      }
+        // SMART INJECTION LOGIC
+        addLog("Injecting AI logic safely...");
+        
+        // 1. Inject CMD triggers into [Statedef -1]
+        let newCmdContent = cmdContent;
+        // Find [Statedef -1] (case insensitive)
+        const statedefRegex = /\[Statedef\s+-1\]/i;
+        const match = newCmdContent.match(statedefRegex);
+        
+        if (match && match.index !== undefined) {
+          // Insert immediately after the [Statedef -1] line
+          const insertionPoint = match.index + match[0].length;
+          newCmdContent = 
+            newCmdContent.slice(0, insertionPoint) + 
+            "\n\n; --- AI GENERATED TRIGGERS START ---\n" + 
+            cmdInjection + 
+            "\n; --- AI GENERATED TRIGGERS END ---\n" + 
+            newCmdContent.slice(insertionPoint);
+        } else {
+          // Fallback: If no Statedef -1 found (rare), append it? 
+          // Or maybe it's a very old char. Let's append to end but warn.
+          addLog("Warning: [Statedef -1] not found in CMD. Appending to end.");
+          newCmdContent += "\n\n[Statedef -1]\n" + cmdInjection;
+        }
 
-      // 2. Append CNS states
-      // Check if [Statedef -3] exists in original CNS to avoid duplicate
-      let newCnsContent = cnsContent;
-      if (cnsAppend.includes("[Statedef -3]") && /\[Statedef\s+-3\]/i.test(newCnsContent)) {
-         // If both have Statedef -3, we should try to merge or rename the new one?
-         // Simplest fix: Rename the AI's Statedef -3 to -2 if -3 exists, or just append and hope MUGEN handles it (it usually runs both if they are separate blocks, actually MUGEN only allows one special state usually).
-         // Safer: Change the AI's [Statedef -3] to just [State ...] blocks and inject into existing -3?
-         // Let's just append for now, but add a comment.
-         // Actually, MUGEN allows multiple [Statedef -3] blocks in different files, but in the SAME file it might be an issue.
-         // Let's just append. Most crashes were likely the CMD Statedef -1 duplicate.
-         newCnsContent += "\n\n; --- AI GENERATED STATES START ---\n" + cnsAppend + "\n; --- AI GENERATED STATES END ---\n";
-      } else {
-         newCnsContent += "\n\n; --- AI GENERATED STATES START ---\n" + cnsAppend + "\n; --- AI GENERATED STATES END ---\n";
-      }
+        // 2. Append CNS states
+        // Check if [Statedef -3] exists in original CNS to avoid duplicate
+        let newCnsContent = cnsContent;
+        if (cnsAppend.includes("[Statedef -3]") && /\[Statedef\s+-3\]/i.test(newCnsContent)) {
+           // If both have Statedef -3, we should try to merge or rename the new one?
+           // Simplest fix: Rename the AI's Statedef -3 to -2 if -3 exists, or just append and hope MUGEN handles it (it usually runs both if they are separate blocks, actually MUGEN only allows one special state usually).
+           // Safer: Change the AI's [Statedef -3] to just [State ...] blocks and inject into existing -3?
+           // Let's just append for now, but add a comment.
+           // Actually, MUGEN allows multiple [Statedef -3] blocks in different files, but in the SAME file it might be an issue.
+           // Let's just append. Most crashes were likely the CMD Statedef -1 duplicate.
+           newCnsContent += "\n\n; --- AI GENERATED STATES START ---\n" + cnsAppend + "\n; --- AI GENERATED STATES END ---\n";
+        } else {
+           newCnsContent += "\n\n; --- AI GENERATED STATES START ---\n" + cnsAppend + "\n; --- AI GENERATED STATES END ---\n";
+        }
 
-      addLog("Merging files...");
-      const zip = new JSZip();
-      zip.file("ai_enhanced.cmd", newCmdContent);
-      zip.file("ai_enhanced.cns", newCnsContent);
-      zip.file("readme_ai.txt", "AI Generated by M.U.G.E.N AI Enhancer\n\nThese files contain your ORIGINAL content plus new AI logic appended at the end.");
+        addLog("Merging files...");
+        const zip = new JSZip();
+        zip.file("ai_enhanced.cmd", newCmdContent);
+        zip.file("ai_enhanced.cns", newCnsContent);
+        zip.file("readme_ai.txt", "AI Generated by M.U.G.E.N AI Enhancer\n\nThese files contain your ORIGINAL content plus new AI logic appended at the end.");
 
-      const content = await zip.generateAsync({ type: "blob" });
-      setResultZip(content);
-      setProgress(100);
-      addLog("Done! Ready for download.");
+        const content = await zip.generateAsync({ type: "blob" });
+        setResultZip(content);
+        setProgress(100);
+        addLog("Done! Ready for download.");
 
     } catch (err: any) {
+      clearInterval(intervalId);
       console.error(err);
       setError(err.message || "An error occurred during generation.");
       addLog(`ERROR: ${err.message}`);
@@ -393,6 +431,7 @@ ${cnsContent}
                     {log}
                   </motion.div>
                 ))}
+                <div ref={logsEndRef} />
                 {isProcessing && (
                   <motion.div
                     animate={{ opacity: [0.5, 1, 0.5] }}

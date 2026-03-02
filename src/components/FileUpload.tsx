@@ -1,6 +1,4 @@
-import { useCallback, useState } from "react";
-import { useDropzone } from "react-dropzone"; // Wait, I didn't install react-dropzone. I'll use native input for now to save a step, or install it.
-// Actually, native input is fine, but drag and drop is nicer. I'll just use a simple div with onDrop.
+import { useState, type DragEvent, type ChangeEvent } from "react";
 import { Upload, FileText, X, CheckCircle2 } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -15,17 +13,17 @@ interface FileUploadProps {
 export function FileUpload({ accept, label, file, onFileSelect, className }: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
 
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleDragOver = (e: DragEvent) => {
     e.preventDefault();
     setIsDragging(true);
   };
 
-  const handleDragLeave = (e: React.DragEvent) => {
+  const handleDragLeave = (e: DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = (e: DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
     const droppedFile = e.dataTransfer.files[0];
@@ -34,7 +32,7 @@ export function FileUpload({ accept, label, file, onFileSelect, className }: Fil
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       onFileSelect(e.target.files[0]);
     }
