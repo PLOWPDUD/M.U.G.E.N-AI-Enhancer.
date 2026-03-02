@@ -37,7 +37,10 @@ export default function App() {
   const [resultZip, setResultZip] = useState<Blob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [versions, setVersions] = useState<AIVersion[]>([]);
+  const [aiVar, setAiVar] = useState(59);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [versionName, setVersionName] = useState("");
+  const [compareVersions, setCompareVersions] = useState<[AIVersion, AIVersion] | null>(null);
   const [generatedCmd, setGeneratedCmd] = useState("");
   const [generatedCns, setGeneratedCns] = useState("");
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -96,6 +99,10 @@ YOUR GOAL:
 Generate *new* AI code blocks to be INJECTED into these files.
 The AI should be "God Tier" (highly competitive).
 
+TECHNICAL REQUIREMENTS:
+- AI VARIABLE: Use var(${aiVar}) to track AI status. 1 = AI ON, 0 = AI OFF.
+- COMPATIBILITY: Ensure the code works in both M.U.G.E.N and Ikemen GO.
+
 USER PREFERENCES:
 - DEFENSIVE LEVEL: ${defensiveLevel}/10. (1 = Standard defense, 10 = Impossible to hit, frame-perfect blocking and evasion).
 - SPAM/AGGRESSION LEVEL: ${spamLevel}/10. (1 = Balanced offense, 10 = Relentless spamming of specials/supers, zero idle time).
@@ -108,13 +115,14 @@ CRITICAL TECHNICAL INSTRUCTIONS (TO PREVENT CRASHES):
    - The user's CMD file already has a \`[Statedef -1]\`.
    - DO NOT output \`[Statedef -1]\` in your response.
    - Output ONLY the \`[State -1, ...]\` blocks that act as AI triggers.
-   - These triggers will be programmatically inserted *inside* the existing \`[Statedef -1]\` block.
-   - Use \`triggerall = var(59) = 1\` (or your chosen AI var) for all your new states.
+   - Use \`triggerall = var(${aiVar}) = 1\` for all your new states.
+   - Ensure all \`ChangeState\` or \`SelfState\` calls use valid state IDs.
 
 2. **CNS FILE**:
-   - Generate a \`[Statedef -3]\` block for AI activation (setting var(59)).
-   - If you need helper states, use safe, high State IDs (e.g., \`[Statedef 9700]\`) to avoid conflicts.
-   - Output the full content for these new states.
+   - Output ONLY the \`[State -2, ...]\` or \`[State -3, ...]\` blocks for AI activation and logic.
+   - DO NOT output the \`[Statedef -2]\` or \`[Statedef -3]\` headers themselves.
+   - Include a block to set \`var(${aiVar}) = 1\` when the match starts and the character is AI-controlled.
+   - If you need helper states, use safe, high State IDs (e.g., \`[Statedef 9700]\`) and output the full block for those.
 
 OUTPUT FORMAT:
 Return ONLY the NEW code to be added, wrapped in these delimiters:
@@ -123,9 +131,13 @@ Return ONLY the NEW code to be added, wrapped in these delimiters:
 ...new [State -1] blocks ONLY...
 ---END CMD INJECTION---
 
----BEGIN CNS APPEND---
-...new Statedef -3 and helper Statedefs...
----END CNS APPEND---
+---BEGIN CNS INJECTION---
+...new [State -2] or [State -3] blocks ONLY...
+---END CNS INJECTION---
+
+---BEGIN CNS HELPERS---
+...full [Statedef XXXX] blocks for any helpers...
+---END CNS HELPERS---
 
 Here is the CMD file content (for context):
 ${cmdContent}
@@ -180,11 +192,13 @@ ${cnsContent}
         }
 
         const cmdInjection = cmdMatch[1].trim();
-        const cnsAppend = cnsMatch[1].trim();
+        const cnsInjection = text.match(/---BEGIN CNS INJECTION---([\s\S]*?)---END CNS INJECTION---/)?.[1]?.trim() || "";
+        const cnsHelpers = text.match(/---BEGIN CNS HELPERS---([\s\S]*?)---END CNS HELPERS---/)?.[1]?.trim() || "";
 
         // Set generated content for preview
         setGeneratedCmd(cmdInjection);
-        setGeneratedCns(cnsAppend);
+        setGeneratedCns(cnsInjection + (cnsHelpers ? "\n\n" + cnsHelpers : ""));
+        setVersionName(`AI Build #${versions.length + 1}`);
         
         addLog("Code generated. Opening preview for review...");
         setIsPreviewOpen(true);
@@ -240,6 +254,22 @@ ${cnsContent}
     setVersions((prev) => prev.filter((v) => v.id !== id));
   };
 
+  const handleCompare = (v: AIVersion) => {
+    if (!compareVersions) {
+      setCompareVersions([v, v]); // First selection
+      addLog(`Selected ${v.name} for comparison. Select another version.`);
+      return;
+    }
+    
+    if (compareVersions[0].id === v.id) {
+      setCompareVersions(null);
+      addLog("Comparison cancelled.");
+      return;
+    }
+
+    setCompareVersions([compareVersions[0], v]);
+  };
+
   const handleApplyEdits = async () => {
     if (!cnsFile || !cmdFile) return;
     
@@ -266,9 +296,23 @@ ${cnsContent}
         newCmdContent += "\n\n[Statedef -1]\n" + generatedCmd;
       }
 
-      // 2. Append CNS states
+      // 2. Inject CNS states
       let newCnsContent = cnsContent;
-      newCnsContent += "\n\n; --- AI GENERATED STATES START ---\n" + generatedCns + "\n; --- AI GENERATED STATES END ---\n";
+      const cnsStatedefRegex = /\[Statedef\s+-2\]|\[Statedef\s+-3\]/i;
+      const cnsMatch = newCnsContent.match(cnsStatedefRegex);
+      
+      if (cnsMatch && cnsMatch.index !== undefined) {
+        const insertionPoint = cnsMatch.index + cnsMatch[0].length;
+        newCnsContent = 
+          newCnsContent.slice(0, insertionPoint) + 
+          "\n\n; --- AI GENERATED STATES START ---\n" + 
+          generatedCns + 
+          "\n; --- AI GENERATED STATES END ---\n" + 
+          newCnsContent.slice(insertionPoint);
+      } else {
+        addLog("Warning: [Statedef -2] or [-3] not found in CNS. Appending to end.");
+        newCnsContent += "\n\n[Statedef -2]\n" + generatedCns;
+      }
 
       addLog("Creating final package...");
       const zip = new JSZip();
@@ -281,7 +325,7 @@ ${cnsContent}
       
       const newVersion: AIVersion = {
         id: crypto.randomUUID(),
-        name: `AI Build #${versions.length + 1}`,
+        name: versionName || `AI Build #${versions.length + 1}`,
         timestamp: Date.now(),
         cmdContent: newCmdContent,
         cnsContent: newCnsContent,
@@ -387,6 +431,18 @@ ${cnsContent}
                         </div>
                       </div>
                       <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => handleCompare(version)}
+                          className={cn(
+                            "p-1.5 rounded transition-colors",
+                            compareVersions?.[0]?.id === version.id || compareVersions?.[1]?.id === version.id
+                              ? "bg-blue-500/20 text-blue-400"
+                              : "hover:bg-blue-500/20 text-blue-500"
+                          )}
+                          title="Compare this version"
+                        >
+                          <Swords className="w-4 h-4" />
+                        </button>
                         <button
                           onClick={() => restoreVersion(version)}
                           className="p-1.5 hover:bg-emerald-500/20 text-emerald-500 rounded transition-colors"
@@ -494,6 +550,26 @@ ${cnsContent}
                   {spamLevel <= 3 ? "Balanced offense" : spamLevel <= 7 ? "Heavy pressure" : "Relentless projectile spam"}
                 </p>
               </div>
+            </div>
+
+            <div className="space-y-3 p-4 rounded-lg border border-zinc-800 bg-zinc-900/30">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm font-medium text-zinc-200">
+                  <Terminal className="w-4 h-4 text-emerald-400" />
+                  AI Variable (var)
+                </div>
+                <input
+                  type="number"
+                  min="0"
+                  max="59"
+                  value={aiVar}
+                  onChange={(e) => setAiVar(parseInt(e.target.value) || 0)}
+                  className="w-16 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs text-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+              <p className="text-[10px] text-zinc-500">
+                The variable used to track AI status. Default is 59. Ensure this variable is not used by the character.
+              </p>
             </div>
 
             <Button
@@ -619,11 +695,17 @@ ${cnsContent}
               className="relative w-full max-w-5xl h-[80vh] bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl flex flex-col overflow-hidden"
             >
               <div className="p-6 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/50 backdrop-blur-md">
-                <div className="space-y-1">
-                  <h2 className="text-xl font-medium text-white flex items-center gap-2">
+                <div className="flex-1 space-y-1">
+                  <div className="flex items-center gap-3">
                     <Terminal className="w-5 h-5 text-emerald-500" />
-                    Review & Edit AI Code
-                  </h2>
+                    <input
+                      type="text"
+                      className="bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-sm text-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-500 w-64"
+                      value={versionName}
+                      onChange={(e) => setVersionName(e.target.value)}
+                      placeholder="Enter version name..."
+                    />
+                  </div>
                   <p className="text-xs text-zinc-500">
                     Modify the generated logic before it's injected into your character files.
                   </p>
@@ -660,6 +742,116 @@ ${cnsContent}
                     onChange={(e) => setGeneratedCns(e.target.value)}
                     spellCheck={false}
                   />
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Comparison Modal */}
+      <AnimatePresence>
+        {compareVersions && compareVersions[0].id !== compareVersions[1].id && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-8">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/90 backdrop-blur-md"
+              onClick={() => setCompareVersions(null)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="relative w-full max-w-7xl h-[90vh] bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+            >
+              <div className="p-6 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/50">
+                <div className="space-y-1">
+                  <h2 className="text-xl font-medium text-white flex items-center gap-2">
+                    <Swords className="w-5 h-5 text-blue-500" />
+                    AI Strategy Comparison
+                  </h2>
+                  <p className="text-xs text-zinc-500">
+                    Comparing <span className="text-blue-400">{compareVersions[0].name}</span> vs <span className="text-emerald-400">{compareVersions[1].name}</span>
+                  </p>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setCompareVersions(null)}>
+                  Close Comparison
+                </Button>
+              </div>
+
+              <div className="flex-1 overflow-auto grid grid-cols-2 gap-px bg-zinc-800">
+                {/* Version 1 */}
+                <div className="bg-zinc-950 flex flex-col">
+                  <div className="p-4 border-b border-zinc-800 bg-zinc-900/30">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="text-sm font-bold text-blue-400">{compareVersions[0].name}</span>
+                      <span className="text-[10px] text-zinc-500 font-mono">{new Date(compareVersions[0].timestamp).toLocaleString()}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <span className="text-[10px] uppercase text-zinc-500">Defensive</span>
+                        <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                          <div className="h-full bg-blue-500" style={{ width: `${compareVersions[0].defensiveLevel * 10}%` }} />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-[10px] uppercase text-zinc-500">Aggression</span>
+                        <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                          <div className="h-full bg-red-500" style={{ width: `${compareVersions[0].spamLevel * 10}%` }} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex-1 p-4 space-y-6 overflow-auto">
+                    <div className="space-y-2">
+                      <h4 className="text-[10px] uppercase tracking-widest text-zinc-600 font-bold">Custom Instructions</h4>
+                      <p className="text-xs text-zinc-400 italic">"{compareVersions[0].customInstructions || "None"}"</p>
+                    </div>
+                    <div className="space-y-2">
+                      <h4 className="text-[10px] uppercase tracking-widest text-zinc-600 font-bold">CMD Triggers</h4>
+                      <pre className="text-[10px] font-mono text-blue-400/70 bg-black/50 p-3 rounded border border-blue-500/10 whitespace-pre-wrap">
+                        {compareVersions[0].cmdContent.split('; --- AI GENERATED TRIGGERS START ---')[1]?.split('; --- AI GENERATED TRIGGERS END ---')[0]?.trim() || "No triggers found"}
+                      </pre>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Version 2 */}
+                <div className="bg-zinc-950 flex flex-col">
+                  <div className="p-4 border-b border-zinc-800 bg-zinc-900/30">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="text-sm font-bold text-emerald-400">{compareVersions[1].name}</span>
+                      <span className="text-[10px] text-zinc-500 font-mono">{new Date(compareVersions[1].timestamp).toLocaleString()}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <span className="text-[10px] uppercase text-zinc-500">Defensive</span>
+                        <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                          <div className="h-full bg-blue-500" style={{ width: `${compareVersions[1].defensiveLevel * 10}%` }} />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-[10px] uppercase text-zinc-500">Aggression</span>
+                        <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                          <div className="h-full bg-red-500" style={{ width: `${compareVersions[1].spamLevel * 10}%` }} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex-1 p-4 space-y-6 overflow-auto">
+                    <div className="space-y-2">
+                      <h4 className="text-[10px] uppercase tracking-widest text-zinc-600 font-bold">Custom Instructions</h4>
+                      <p className="text-xs text-zinc-400 italic">"{compareVersions[1].customInstructions || "None"}"</p>
+                    </div>
+                    <div className="space-y-2">
+                      <h4 className="text-[10px] uppercase tracking-widest text-zinc-600 font-bold">CMD Triggers</h4>
+                      <pre className="text-[10px] font-mono text-emerald-400/70 bg-black/50 p-3 rounded border border-emerald-500/10 whitespace-pre-wrap">
+                        {compareVersions[1].cmdContent.split('; --- AI GENERATED TRIGGERS START ---')[1]?.split('; --- AI GENERATED TRIGGERS END ---')[0]?.trim() || "No triggers found"}
+                      </pre>
+                    </div>
+                  </div>
                 </div>
               </div>
             </motion.div>
