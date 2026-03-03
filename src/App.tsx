@@ -9,7 +9,7 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import { FileUpload } from "./components/FileUpload";
 import { Button } from "./components/Button";
-import { Loader2, Download, Cpu, Zap, Shield, Swords, Terminal, FileText, Clock, RotateCcw, Trash2, CheckCircle2 } from "lucide-react";
+import { Loader2, Download, Cpu, Zap, Shield, Swords, Terminal, FileText, Clock, RotateCcw, Trash2, CheckCircle2, Undo2, Redo2 } from "lucide-react";
 import { cn } from "./lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import { EXAMPLE_CMD, EXAMPLE_CNS } from "./lib/exampleData";
@@ -20,6 +20,9 @@ interface AIVersion {
   timestamp: number;
   cmdContent: string;
   cnsContent: string;
+  generatedCmd: string;
+  generatedCns: string;
+  generatedHelpers: string;
   defensiveLevel: number;
   spamLevel: number;
   customInstructions: string;
@@ -43,7 +46,89 @@ export default function App() {
   const [compareVersions, setCompareVersions] = useState<[AIVersion, AIVersion] | null>(null);
   const [generatedCmd, setGeneratedCmd] = useState("");
   const [generatedCns, setGeneratedCns] = useState("");
+  const [generatedHelpers, setGeneratedHelpers] = useState("");
+  const [historyState, setHistoryState] = useState<{
+    items: { cmd: string; cns: string; helpers: string }[];
+    index: number;
+  }>({ items: [], index: -1 });
+  const isInternalChange = useRef(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
+
+  const addToHistory = (cmd: string, cns: string, helpers: string) => {
+    setHistoryState(prev => {
+      // Don't push if it's the same as the current state
+      if (prev.index >= 0 && prev.items[prev.index]) {
+        const current = prev.items[prev.index];
+        if (current.cmd === cmd && current.cns === cns && current.helpers === helpers) return prev;
+      }
+      
+      const newItems = prev.items.slice(0, prev.index + 1);
+      newItems.push({ cmd, cns, helpers });
+      
+      let newIndex = prev.index + 1;
+      if (newItems.length > 50) {
+        newItems.shift();
+        newIndex = Math.max(0, newIndex - 1);
+      }
+      
+      return { items: newItems, index: newIndex };
+    });
+  };
+
+  const undo = () => {
+    if (historyState.index > 0) {
+      isInternalChange.current = true;
+      const prevIndex = historyState.index - 1;
+      const prevState = historyState.items[prevIndex];
+      setGeneratedCmd(prevState.cmd);
+      setGeneratedCns(prevState.cns);
+      setGeneratedHelpers(prevState.helpers);
+      setHistoryState(prev => ({ ...prev, index: prevIndex }));
+      setTimeout(() => { isInternalChange.current = false; }, 50);
+    }
+  };
+
+  const redo = () => {
+    if (historyState.index < historyState.items.length - 1) {
+      isInternalChange.current = true;
+      const nextIndex = historyState.index + 1;
+      const nextState = historyState.items[nextIndex];
+      setGeneratedCmd(nextState.cmd);
+      setGeneratedCns(nextState.cns);
+      setGeneratedHelpers(nextState.helpers);
+      setHistoryState(prev => ({ ...prev, index: nextIndex }));
+      setTimeout(() => { isInternalChange.current = false; }, 50);
+    }
+  };
+
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isPreviewOpen) return;
+      
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        undo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        redo();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPreviewOpen, historyState]);
+
+  // Debounced history push for manual edits
+  useEffect(() => {
+    if (isInternalChange.current || !isPreviewOpen) return;
+
+    const timer = setTimeout(() => {
+      addToHistory(generatedCmd, generatedCns, generatedHelpers);
+    }, 1000); // 1 second debounce
+
+    return () => clearTimeout(timer);
+  }, [generatedCmd, generatedCns, generatedHelpers, isPreviewOpen]);
 
   const addLog = (msg: string) => setLogs((prev) => [...prev, `> ${msg}`]);
 
@@ -209,7 +294,9 @@ ${cnsContent}
 
         // Set generated content for preview
         setGeneratedCmd(cmdInjection);
-        setGeneratedCns(cnsInjection + (cnsHelpers ? "\n\n" + cnsHelpers : ""));
+        setGeneratedCns(cnsInjection);
+        setGeneratedHelpers(cnsHelpers);
+        setHistoryState({ items: [{ cmd: cmdInjection, cns: cnsInjection, helpers: cnsHelpers }], index: 0 });
         setVersionName(`AI Build #${versions.length + 1}`);
         
         addLog("Code generated. Opening preview for review...");
@@ -249,6 +336,18 @@ ${cnsContent}
     setDefensiveLevel(version.defensiveLevel);
     setSpamLevel(version.spamLevel);
     setCustomInstructions(version.customInstructions);
+    setGeneratedCmd(version.generatedCmd || "");
+    setGeneratedCns(version.generatedCns || "");
+    setGeneratedHelpers(version.generatedHelpers || "");
+    setHistoryState({ 
+      items: [{ 
+        cmd: version.generatedCmd || "", 
+        cns: version.generatedCns || "", 
+        helpers: version.generatedHelpers || "" 
+      }], 
+      index: 0 
+    });
+    setVersionName(version.name);
     
     // Re-generate ZIP for this version
     const zip = new JSZip();
@@ -258,7 +357,8 @@ ${cnsContent}
     
     zip.generateAsync({ type: "blob" }).then((content) => {
       setResultZip(content);
-      addLog(`Restored version: ${version.name}`);
+      setIsPreviewOpen(true);
+      addLog(`Restored version: ${version.name}. You can review and re-apply edits.`);
     });
   };
 
@@ -310,20 +410,31 @@ ${cnsContent}
 
       // 2. Inject CNS states
       let newCnsContent = cnsContent;
-      const cnsStatedefRegex = /\[Statedef\s+-2\]|\[Statedef\s+-3\]/i;
-      const cnsMatch = newCnsContent.match(cnsStatedefRegex);
       
-      if (cnsMatch && cnsMatch.index !== undefined) {
-        const insertionPoint = cnsMatch.index + cnsMatch[0].length;
-        newCnsContent = 
-          newCnsContent.slice(0, insertionPoint) + 
-          "\n\n; --- AI GENERATED STATES START ---\n" + 
-          generatedCns + 
-          "\n; --- AI GENERATED STATES END ---\n" + 
-          newCnsContent.slice(insertionPoint);
-      } else {
-        addLog("Warning: [Statedef -2] or [-3] not found in CNS. Appending to end.");
-        newCnsContent += "\n\n[Statedef -2]\n" + generatedCns;
+      // Inject logic into [Statedef -2] or [-3]
+      if (generatedCns) {
+        const cnsStatedefRegex = /\[Statedef\s+-2\]|\[Statedef\s+-3\]/i;
+        const cnsMatch = newCnsContent.match(cnsStatedefRegex);
+        
+        if (cnsMatch && cnsMatch.index !== undefined) {
+          const insertionPoint = cnsMatch.index + cnsMatch[0].length;
+          newCnsContent = 
+            newCnsContent.slice(0, insertionPoint) + 
+            "\n\n; --- AI GENERATED STATES START ---\n" + 
+            generatedCns + 
+            "\n; --- AI GENERATED STATES END ---\n" + 
+            newCnsContent.slice(insertionPoint);
+        } else {
+          addLog("Warning: [Statedef -2] or [-3] not found in CNS. Appending logic to end.");
+          newCnsContent += "\n\n[Statedef -2]\n" + generatedCns;
+        }
+      }
+
+      // Append helpers to the end (NEVER inside another statedef)
+      if (generatedHelpers) {
+        newCnsContent += "\n\n; --- AI GENERATED HELPERS START ---\n" + 
+          generatedHelpers + 
+          "\n; --- AI GENERATED HELPERS END ---\n";
       }
 
       addLog("Creating final package...");
@@ -341,6 +452,9 @@ ${cnsContent}
         timestamp: Date.now(),
         cmdContent: newCmdContent,
         cnsContent: newCnsContent,
+        generatedCmd,
+        generatedCns,
+        generatedHelpers,
         defensiveLevel,
         spamLevel,
         customInstructions,
@@ -723,6 +837,28 @@ ${cnsContent}
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
+                  <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded p-1 mr-2">
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className="h-7 w-7 text-zinc-400 hover:text-white disabled:opacity-30"
+                      onClick={undo}
+                      disabled={historyState.index <= 0}
+                      title="Undo (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className="h-7 w-7 text-zinc-400 hover:text-white disabled:opacity-30"
+                      onClick={redo}
+                      disabled={historyState.index >= historyState.items.length - 1}
+                      title="Redo (Ctrl+Y)"
+                    >
+                      <Redo2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
                   <Button variant="outline" size="sm" onClick={() => setIsPreviewOpen(false)}>
                     Cancel
                   </Button>
@@ -749,11 +885,24 @@ ${cnsContent}
                     <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500">ai_logic.cns</span>
                   </div>
                   <textarea
-                    className="flex-1 bg-zinc-950 p-4 font-mono text-xs text-blue-400/80 focus:outline-none resize-none selection:bg-blue-500/20"
+                    className="flex-[2] bg-zinc-950 p-4 font-mono text-xs text-blue-400/80 focus:outline-none resize-none selection:bg-blue-500/20"
                     value={generatedCns}
                     onChange={(e) => setGeneratedCns(e.target.value)}
                     spellCheck={false}
                   />
+                  {generatedHelpers && (
+                    <>
+                      <div className="px-4 py-2 bg-zinc-950 border-t border-b border-zinc-800 flex items-center justify-between">
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-purple-400">helper_states.cns</span>
+                      </div>
+                      <textarea
+                        className="flex-1 bg-zinc-950 p-4 font-mono text-xs text-purple-400/80 focus:outline-none resize-none selection:bg-purple-500/20"
+                        value={generatedHelpers}
+                        onChange={(e) => setGeneratedHelpers(e.target.value)}
+                        spellCheck={false}
+                      />
+                    </>
+                  )}
                 </div>
               </div>
             </motion.div>
