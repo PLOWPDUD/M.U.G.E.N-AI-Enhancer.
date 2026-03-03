@@ -121,7 +121,18 @@ CRITICAL TECHNICAL INSTRUCTIONS (TO PREVENT CRASHES):
 2. **CNS FILE**:
    - Output ONLY the \`[State -2, ...]\` or \`[State -3, ...]\` blocks for AI activation and logic.
    - DO NOT output the \`[Statedef -2]\` or \`[Statedef -3]\` headers themselves.
-   - Include a block to set \`var(${aiVar}) = 1\` when the match starts and the character is AI-controlled.
+   - **CRITICAL**: Include a block to set \`var(${aiVar}) = 1\` ONLY if \`AILevel > 0\`. Also include a block to set \`var(${aiVar}) = 0\` if \`AILevel = 0\` to ensure the AI turns off when a human takes control.
+   - Example activation/deactivation:
+     \`[State -2, AI Control]\`
+     \`type = VarSet\`
+     \`trigger1 = AILevel > 0\`
+     \`v = ${aiVar}\`
+     \`value = 1\`
+     \`[State -2, Human Control]\`
+     \`type = VarSet\`
+     \`trigger1 = AILevel = 0\`
+     \`v = ${aiVar}\`
+     \`value = 0\`
    - If you need helper states, use safe, high State IDs (e.g., \`[Statedef 9700]\`) and output the full block for those.
 
 OUTPUT FORMAT:
@@ -569,7 +580,7 @@ ${cnsContent}
                 />
               </div>
               <p className="text-[10px] text-zinc-500">
-                The variable used to track AI status. Default is 59. Ensure this variable is not used by the character.
+                The variable used to track AI status. Default is 59. The AI will automatically disable itself if it detects a human player (AILevel = 0).
               </p>
             </div>
 
