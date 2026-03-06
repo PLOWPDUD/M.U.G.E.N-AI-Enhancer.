@@ -9,7 +9,7 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import { FileUpload } from "./components/FileUpload";
 import { Button } from "./components/Button";
-import { Loader2, Download, Cpu, Zap, Shield, Swords, Terminal, FileText, Clock, RotateCcw, Trash2, CheckCircle2, Undo2, Redo2 } from "lucide-react";
+import { Loader2, Download, Cpu, Zap, Shield, Swords, Terminal, FileText, Clock, RotateCcw, Trash2, CheckCircle2, Undo2, Redo2, Wand2 } from "lucide-react";
 import { cn } from "./lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import { EXAMPLE_CMD, EXAMPLE_CNS } from "./lib/exampleData";
@@ -36,6 +36,7 @@ export default function App() {
   const [spamLevel, setSpamLevel] = useState(1);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [currentStatus, setCurrentStatus] = useState<string>("");
   const [logs, setLogs] = useState<string[]>([]);
   const [resultZip, setResultZip] = useState<Blob | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,15 +60,59 @@ export default function App() {
     const newWarnings: string[] = [];
     
     const checkBlock = (code: string, name: string) => {
+      if (code.match(/\[Statedef\s+[^\]]*\]/i)) {
+        newWarnings.push(`${name}: Contains a [Statedef] block. This will cause a crash if injected into -1/-2. Move it to HELPERS.`);
+      }
+
       const controllers = code.split(/\[State[^\]]*\]/i);
       controllers.shift(); // Remove content before first controller
       
       controllers.forEach((ctrl, i) => {
-        if (ctrl.trim() && !ctrl.includes("type =")) {
-          newWarnings.push(`${name}: Controller #${i + 1} is missing a 'type' parameter.`);
+        const trimmed = ctrl.trim();
+        if (!trimmed) return;
+
+        const lines = trimmed.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith(';'));
+        
+        // 1. Check for 'type'
+        const hasType = lines.some(l => l.toLowerCase().startsWith('type'));
+        if (!hasType) {
+          newWarnings.push(`${name}: Controller #${i + 1} is missing 'type'.`);
         }
-        if (ctrl.trim() && !ctrl.includes("trigger")) {
-          newWarnings.push(`${name}: Controller #${i + 1} is missing a 'trigger' parameter.`);
+
+        // 2. Check for triggers
+        const triggerLines = lines.filter(l => l.toLowerCase().startsWith('trigger'));
+        if (triggerLines.length === 0) {
+          newWarnings.push(`${name}: Controller #${i + 1} is missing 'trigger'.`);
+        } else {
+          // Check trigger order: triggerall must be before trigger1/2/3
+          let foundNumberedTrigger = false;
+          triggerLines.forEach(tl => {
+            const isAll = tl.toLowerCase().startsWith('triggerall');
+            if (!isAll) foundNumberedTrigger = true;
+            if (isAll && foundNumberedTrigger) {
+              newWarnings.push(`${name}: Controller #${i + 1} has 'triggerall' after a numbered trigger. This crashes Ikemen GO.`);
+            }
+          });
+
+          // Check for trigger1 if trigger2 exists
+          const hasTrigger1 = triggerLines.some(tl => tl.toLowerCase().startsWith('trigger1'));
+          const hasTrigger2 = triggerLines.some(tl => tl.toLowerCase().startsWith('trigger2'));
+          if (hasTrigger2 && !hasTrigger1) {
+            newWarnings.push(`${name}: Controller #${i + 1} has 'trigger2' but no 'trigger1'.`);
+          }
+        }
+
+        // 3. Check for mandatory parameters based on type
+        const typeLine = lines.find(l => l.toLowerCase().startsWith('type'));
+        if (typeLine) {
+          const type = typeLine.split('=')[1]?.trim().toLowerCase();
+          if (type === 'varset' || type === 'varadd') {
+            if (!lines.some(l => l.toLowerCase().startsWith('v'))) newWarnings.push(`${name}: Controller #${i + 1} (VarSet) missing 'v'.`);
+            if (!lines.some(l => l.toLowerCase().startsWith('value'))) newWarnings.push(`${name}: Controller #${i + 1} (VarSet) missing 'value'.`);
+          }
+          if (type === 'changestate' || type === 'selfstate') {
+            if (!lines.some(l => l.toLowerCase().startsWith('value'))) newWarnings.push(`${name}: Controller #${i + 1} (ChangeState) missing 'value'.`);
+          }
         }
       });
     };
@@ -119,6 +164,49 @@ export default function App() {
       
       return { items: newItems, index: newIndex };
     });
+  };
+
+  const fixSyntax = () => {
+    const fixBlock = (code: string) => {
+      const controllers = code.split(/(\[State[^\]]*\])/i);
+      let fixed = controllers[0]; // Content before first state
+      
+      for (let i = 1; i < controllers.length; i += 2) {
+        const header = controllers[i];
+        let body = controllers[i + 1] || "";
+        
+        const lines = body.split('\n').map(l => l.trim()).filter(l => l);
+        const newLines = [...lines];
+
+        // 1. Ensure 'type' exists
+        if (!lines.some(l => l.toLowerCase().startsWith('type'))) {
+          newLines.unshift('type = Null');
+        }
+
+        // 2. Ensure 'trigger1' exists if no triggers at all
+        if (!lines.some(l => l.toLowerCase().startsWith('trigger'))) {
+          newLines.push('trigger1 = 1');
+        }
+
+        // 3. Fix trigger order (triggerall first)
+        const triggerAlls = newLines.filter(l => l.toLowerCase().startsWith('triggerall'));
+        const triggerOthers = newLines.filter(l => l.toLowerCase().startsWith('trigger') && !l.toLowerCase().startsWith('triggerall'));
+        const nonTriggers = newLines.filter(l => !l.toLowerCase().startsWith('trigger'));
+        
+        const finalLines = [...nonTriggers.filter(l => l.toLowerCase().startsWith('type')), ...triggerAlls, ...triggerOthers, ...nonTriggers.filter(l => !l.toLowerCase().startsWith('type'))];
+        
+        fixed += header + "\n" + finalLines.join("\n") + "\n\n";
+      }
+      return fixed.trim();
+    };
+
+    const fixedCmd = fixBlock(generatedCmd);
+    const fixedCns = fixBlock(generatedCns);
+    
+    setGeneratedCmd(fixedCmd);
+    setGeneratedCns(fixedCns);
+    addToHistory(fixedCmd, fixedCns, generatedHelpers);
+    addLog("Applied automatic syntax fixes for Ikemen GO compatibility.");
   };
 
   const undo = () => {
@@ -215,58 +303,39 @@ export default function App() {
     let intervalId: NodeJS.Timeout | undefined;
 
     try {
+      setCurrentStatus("Reading file contents...");
       addLog("Reading file contents...");
       const cnsContent = await cnsFile.text();
       const cmdContent = await cmdFile.text();
       
       setProgress(30);
+      setCurrentStatus("Initializing Neural Network...");
       addLog("Initializing Neural Network (Gemini 3 Flash)...");
 
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const prompt = `
-You are an expert M.U.G.E.N AI developer.
+You are an expert M.U.G.E.N and Ikemen GO AI developer.
 I will provide the content of a .cmd (Command) file and a .cns (Constants) file for a character.
 
 YOUR GOAL:
 Generate *new* AI code blocks to be INJECTED into these files.
 The AI should be "God Tier" (highly competitive).
 
-TECHNICAL REQUIREMENTS:
-- AI VARIABLE: Use var(${aiVar}) to track AI status. 1 = AI ON, 0 = AI OFF.
-- COMPATIBILITY: Ensure the code works in both M.U.G.E.N and Ikemen GO.
+CRITICAL IKEMEN GO COMPATIBILITY RULES (MANDATORY):
+1. **EVERY [State]** must have a 'type =' parameter.
+2. **EVERY [State]** must have at least one 'trigger1 =' or 'triggerall =' parameter.
+3. **TRIGGER ORDER**: 'triggerall' MUST come BEFORE any 'trigger1', 'trigger2', etc.
+4. **TRIGGER CONTINUITY**: You cannot have 'trigger2' if 'trigger1' is missing.
+5. **VARSET/VARADD**: Must include both 'v =' (variable index) and 'value ='.
+6. **CHANGESTATE/SELFSTATE**: Must include 'value ='.
+7. **NO STATEDEF**: Do not include [Statedef] headers in CMD_TRIGGERS or CNS_STATES.
 
 USER PREFERENCES:
-- DEFENSIVE LEVEL: ${defensiveLevel}/10. (1 = Standard defense, 10 = Impossible to hit, frame-perfect blocking and evasion).
-- SPAM/AGGRESSION LEVEL: ${spamLevel}/10. (1 = Balanced offense, 10 = Relentless spamming of specials/supers, zero idle time).
-
-USER CUSTOM INSTRUCTIONS:
-${customInstructions ? customInstructions : "No specific custom instructions provided."}
-
-CRITICAL TECHNICAL INSTRUCTIONS (TO PREVENT CRASHES):
-1. **CMD FILE**:
-   - The user's CMD file already has a \`[Statedef -1]\`.
-   - DO NOT output \`[Statedef -1]\` in your response.
-   - Output ONLY the \`[State -1, ...]\` blocks that act as AI triggers.
-   - Use \`triggerall = var(${aiVar}) = 1\` for all your new states.
-   - Ensure all \`ChangeState\` or \`SelfState\` calls use valid state IDs.
-
-2. **CNS FILE**:
-   - Output ONLY the \`[State -2, ...]\` or \`[State -3, ...]\` blocks for AI activation and logic.
-   - DO NOT output the \`[Statedef -2]\` or \`[Statedef -3]\` headers themselves.
-   - **CRITICAL**: Include a block to set \`var(${aiVar}) = 1\` ONLY if \`AILevel > 0\`. Also include a block to set \`var(${aiVar}) = 0\` if \`AILevel = 0\` to ensure the AI turns off when a human takes control.
-   - Example activation/deactivation:
-     \`[State -2, AI Control]\`
-     \`type = VarSet\`
-     \`trigger1 = AILevel > 0\`
-     \`v = ${aiVar}\`
-     \`value = 1\`
-     \`[State -2, Human Control]\`
-     \`type = VarSet\`
-     \`trigger1 = AILevel = 0\`
-     \`v = ${aiVar}\`
-     \`value = 0\`
-   - If you need helper states, use safe, high State IDs (e.g., \`[Statedef 9700]\`) and output the full block for those.
+- DEFENSIVE LEVEL: ${defensiveLevel}/10.
+- SPAM/AGGRESSION LEVEL: ${spamLevel}/10.
+- CUSTOM GOALS: ${customInstructions ? customInstructions : "Balanced gameplay"}
+- AI VARIABLE: var(${aiVar})
 
 OUTPUT FORMAT:
 Return ONLY the NEW code to be added, wrapped in these delimiters:
@@ -302,11 +371,13 @@ ${cnsContent}
       ];
 
       let msgIndex = 0;
+      setCurrentStatus(loadingMessages[0]);
       addLog(loadingMessages[0]);
       
       intervalId = setInterval(() => {
         msgIndex++;
         if (msgIndex < loadingMessages.length) {
+          setCurrentStatus(loadingMessages[msgIndex]);
           addLog(loadingMessages[msgIndex]);
           setProgress((prev) => Math.min(prev + 10, 65)); // Increment progress slowly
         }
@@ -326,6 +397,7 @@ ${cnsContent}
         text = text.replace(/```\w*\n/g, "").replace(/```/g, "");
 
         setProgress(70);
+        setCurrentStatus("Parsing generated code...");
         addLog("Response received. Parsing generated code...");
 
         const cmdMatch = text.match(/---BEGIN CMD INJECTION---([\s\S]*?)---END CMD INJECTION---/);
@@ -348,14 +420,16 @@ ${cnsContent}
         setVersionName(`AI Build #${versions.length + 1}`);
         
         addLog("Code generated. Opening preview for review...");
+        setCurrentStatus("Finalizing...");
         setIsPreviewOpen(true);
-        setProgress(80);
+        setProgress(100);
         setIsProcessing(false);
 
     } catch (err: any) {
       clearInterval(intervalId);
       console.error(err);
       setError(err.message || "An error occurred during generation.");
+      setCurrentStatus("Generation failed.");
       addLog(`ERROR: ${err.message}`);
     } finally {
       setIsProcessing(false);
@@ -372,6 +446,7 @@ ${cnsContent}
     setLogs([]);
     setError(null);
     setProgress(0);
+    setCurrentStatus("");
   };
 
   const downloadZip = () => {
@@ -836,7 +911,52 @@ ${cnsContent}
             </div>
 
             <AnimatePresence>
-              {resultZip && (
+              {isProcessing && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="bg-zinc-900 border border-emerald-500/30 rounded-lg p-6 space-y-4 shadow-2xl relative overflow-hidden"
+                >
+                  <div className="absolute top-0 left-0 w-full h-1 bg-zinc-800">
+                    <motion.div 
+                      className="h-full bg-emerald-500"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="relative">
+                        <Loader2 className="w-6 h-6 text-emerald-500 animate-spin" />
+                        <div className="absolute inset-0 bg-emerald-500/20 blur-lg rounded-full animate-pulse" />
+                      </div>
+                      <div>
+                        <h3 className="text-emerald-400 font-medium text-sm">AI Generation in Progress</h3>
+                        <p className="text-zinc-500 text-xs font-mono">{currentStatus}</p>
+                      </div>
+                    </div>
+                    <span className="text-xs font-mono text-emerald-500/70">{progress}%</span>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-1 h-1">
+                    {[0, 1, 2, 3].map((i) => (
+                      <motion.div
+                        key={i}
+                        className="bg-emerald-500/20 rounded-full"
+                        animate={{
+                          backgroundColor: progress > (i * 25) ? "rgba(16, 185, 129, 0.5)" : "rgba(16, 185, 129, 0.1)"
+                        }}
+                      />
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {resultZip && !isProcessing && (
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -860,15 +980,30 @@ ${cnsContent}
               )}
             </AnimatePresence>
             
-            {error && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 text-red-400 text-sm"
-              >
-                {error}
-              </motion.div>
-            )}
+            <AnimatePresence>
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 20 }}
+                  className="bg-red-900/20 border border-red-500/30 rounded-lg p-4 flex items-start gap-3"
+                >
+                  <div className="p-1.5 bg-red-500/10 rounded-full border border-red-500/20">
+                    <Zap className="w-4 h-4 text-red-500" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-red-400 font-medium text-sm">Generation Error</h3>
+                    <p className="text-red-500/70 text-xs mt-0.5">{error}</p>
+                  </div>
+                  <button 
+                    onClick={() => setError(null)}
+                    className="text-red-500/50 hover:text-red-500 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </div>
 
@@ -957,6 +1092,16 @@ ${cnsContent}
                       <Redo2 className="w-3.5 h-3.5" />
                     </Button>
                   </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={fixSyntax}
+                    className="border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 gap-2"
+                    title="Auto-fix common Ikemen GO syntax issues"
+                  >
+                    <Wand2 className="w-3.5 h-3.5" />
+                    Fix Syntax
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => setIsPreviewOpen(false)}>
                     Cancel
                   </Button>
