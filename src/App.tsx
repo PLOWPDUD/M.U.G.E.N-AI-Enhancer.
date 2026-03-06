@@ -51,10 +51,56 @@ export default function App() {
     items: { cmd: string; cns: string; helpers: string }[];
     index: number;
   }>({ items: [], index: -1 });
+  const [warnings, setWarnings] = useState<string[]>([]);
   const isInternalChange = useRef(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
+  const validateCode = (cmd: string, cns: string, helpers: string) => {
+    const newWarnings: string[] = [];
+    
+    const checkBlock = (code: string, name: string) => {
+      const controllers = code.split(/\[State[^\]]*\]/i);
+      controllers.shift(); // Remove content before first controller
+      
+      controllers.forEach((ctrl, i) => {
+        if (ctrl.trim() && !ctrl.includes("type =")) {
+          newWarnings.push(`${name}: Controller #${i + 1} is missing a 'type' parameter.`);
+        }
+        if (ctrl.trim() && !ctrl.includes("trigger")) {
+          newWarnings.push(`${name}: Controller #${i + 1} is missing a 'trigger' parameter.`);
+        }
+      });
+    };
+
+    checkBlock(cmd, "CMD");
+    checkBlock(cns, "CNS");
+
+    if (helpers) {
+      const helperDefs = helpers.split(/\[Statedef\s+(\d+)\]/i);
+      for (let i = 1; i < helperDefs.length; i += 2) {
+        const id = helperDefs[i];
+        const content = helperDefs[i + 1];
+        if (content && !content.includes("type =")) {
+          newWarnings.push(`HELPERS: Statedef ${id} is missing 'type' parameter.`);
+        }
+      }
+    }
+
+    // Check for AI Variable consistency
+    const varRegex = new RegExp(`var\\((\\d+)\\)`, "g");
+    const cmdVars = [...cmd.matchAll(varRegex)].map(m => parseInt(m[1]));
+    const cnsVars = [...cns.matchAll(varRegex)].map(m => parseInt(m[1]));
+    
+    const inconsistentVars = [...new Set([...cmdVars, ...cnsVars])].filter(v => v !== aiVar);
+    if (inconsistentVars.length > 0) {
+      newWarnings.push(`Variable Conflict: AI is using var(${inconsistentVars.join(", ")}) but you selected var(${aiVar}).`);
+    }
+
+    setWarnings(newWarnings);
+  };
+
   const addToHistory = (cmd: string, cns: string, helpers: string) => {
+    validateCode(cmd, cns, helpers);
     setHistoryState(prev => {
       // Don't push if it's the same as the current state
       if (prev.index >= 0 && prev.items[prev.index]) {
@@ -84,6 +130,7 @@ export default function App() {
       setGeneratedCns(prevState.cns);
       setGeneratedHelpers(prevState.helpers);
       setHistoryState(prev => ({ ...prev, index: prevIndex }));
+      validateCode(prevState.cmd, prevState.cns, prevState.helpers);
       setTimeout(() => { isInternalChange.current = false; }, 50);
     }
   };
@@ -97,6 +144,7 @@ export default function App() {
       setGeneratedCns(nextState.cns);
       setGeneratedHelpers(nextState.helpers);
       setHistoryState(prev => ({ ...prev, index: nextIndex }));
+      validateCode(nextState.cmd, nextState.cns, nextState.helpers);
       setTimeout(() => { isInternalChange.current = false; }, 50);
     }
   };
@@ -390,9 +438,15 @@ ${cnsContent}
       const cnsContent = await cnsFile.text();
       const cmdContent = await cmdFile.text();
 
+      // Sanitization: Remove any [Statedef] headers that might have been included in injection blocks
+      const cleanCmd = generatedCmd.replace(/^\[Statedef\s+-(1|2|3)[^\]]*\]\s*$/gim, "").trim();
+      const cleanCns = generatedCns.replace(/^\[Statedef\s+-(1|2|3)[^\]]*\]\s*$/gim, "").trim();
+      const cleanHelpers = generatedHelpers.trim();
+
       // 1. Inject CMD triggers into [Statedef -1]
       let newCmdContent = cmdContent;
-      const statedefRegex = /\[Statedef\s+-1\]/i;
+      // More robust regex to match variants like [Statedef -1, AI]
+      const statedefRegex = /\[Statedef\s+-1[^\]]*\]/i;
       const match = newCmdContent.match(statedefRegex);
       
       if (match && match.index !== undefined) {
@@ -400,40 +454,56 @@ ${cnsContent}
         newCmdContent = 
           newCmdContent.slice(0, insertionPoint) + 
           "\n\n; --- AI GENERATED TRIGGERS START ---\n" + 
-          generatedCmd + 
+          cleanCmd + 
           "\n; --- AI GENERATED TRIGGERS END ---\n" + 
           newCmdContent.slice(insertionPoint);
       } else {
         addLog("Warning: [Statedef -1] not found in CMD. Appending to end.");
-        newCmdContent += "\n\n[Statedef -1]\n" + generatedCmd;
+        newCmdContent += "\n\n[Statedef -1]\n" + cleanCmd;
       }
 
       // 2. Inject CNS states
       let newCnsContent = cnsContent;
       
       // Inject logic into [Statedef -2] or [-3]
-      if (generatedCns) {
-        const cnsStatedefRegex = /\[Statedef\s+-2\]|\[Statedef\s+-3\]/i;
-        const cnsMatch = newCnsContent.match(cnsStatedefRegex);
+      if (cleanCns) {
+        // Look for -2 or -3, but also check if they are in the CMD (rare but happens)
+        const cnsStatedefRegex = /\[Statedef\s+-(2|3)[^\]]*\]/i;
+        let cnsMatch = newCnsContent.match(cnsStatedefRegex);
         
         if (cnsMatch && cnsMatch.index !== undefined) {
           const insertionPoint = cnsMatch.index + cnsMatch[0].length;
           newCnsContent = 
             newCnsContent.slice(0, insertionPoint) + 
             "\n\n; --- AI GENERATED STATES START ---\n" + 
-            generatedCns + 
+            cleanCns + 
             "\n; --- AI GENERATED STATES END ---\n" + 
             newCnsContent.slice(insertionPoint);
         } else {
-          addLog("Warning: [Statedef -2] or [-3] not found in CNS. Appending logic to end.");
-          newCnsContent += "\n\n[Statedef -2]\n" + generatedCns;
+          // Check if -2/-3 is in CMD instead
+          const cmdCnsMatch = newCmdContent.match(cnsStatedefRegex);
+          if (cmdCnsMatch && cmdCnsMatch.index !== undefined) {
+            addLog("Found [Statedef -2/-3] in CMD file. Injecting logic there.");
+            const insertionPoint = cmdCnsMatch.index + cmdCnsMatch[0].length;
+            newCmdContent = 
+              newCmdContent.slice(0, insertionPoint) + 
+              "\n\n; --- AI GENERATED STATES START ---\n" + 
+              cleanCns + 
+              "\n; --- AI GENERATED STATES END ---\n" + 
+              newCmdContent.slice(insertionPoint);
+          } else {
+            addLog("Warning: [Statedef -2] or [-3] not found. Appending logic to CNS.");
+            if (!newCnsContent.endsWith("\n")) newCnsContent += "\n";
+            newCnsContent += "\n[Statedef -2]\n" + cleanCns;
+          }
         }
       }
 
       // Append helpers to the end (NEVER inside another statedef)
-      if (generatedHelpers) {
+      if (cleanHelpers) {
+        if (!newCnsContent.endsWith("\n")) newCnsContent += "\n";
         newCnsContent += "\n\n; --- AI GENERATED HELPERS START ---\n" + 
-          generatedHelpers + 
+          cleanHelpers + 
           "\n; --- AI GENERATED HELPERS END ---\n";
       }
 
@@ -801,6 +871,34 @@ ${cnsContent}
             )}
           </div>
         </div>
+
+        {/* Safety Tips */}
+        <div className="mt-12 bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 backdrop-blur-sm">
+          <div className="flex items-center gap-3 mb-4">
+            <Shield className="w-5 h-5 text-emerald-500" />
+            <h2 className="text-lg font-medium text-white">Character Safety Guide</h2>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Avoid Crashes</h3>
+              <p className="text-sm text-zinc-500 leading-relaxed">
+                Ensure your character has <code className="text-emerald-400/80">[Statedef -1]</code> in the CMD and <code className="text-emerald-400/80">[Statedef -2]</code> in the CNS. The AI needs these headers to inject logic safely.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Variable Conflicts</h3>
+              <p className="text-sm text-zinc-500 leading-relaxed">
+                Check if your character already uses <code className="text-emerald-400/80">var({aiVar})</code>. If it does, change the AI Variable in the settings above to an unused slot (e.g., 50-59).
+              </p>
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Ikemen GO Support</h3>
+              <p className="text-sm text-zinc-500 leading-relaxed">
+                Ikemen GO is strict. If the character crashes, check the "Potential Issues" bar in the preview window for missing parameters like <code className="text-emerald-400/80">type</code> or <code className="text-emerald-400/80">trigger</code>.
+              </p>
+            </div>
+          </div>
+        </div>
       </main>
 
       {/* Preview Modal */}
@@ -867,6 +965,20 @@ ${cnsContent}
                   </Button>
                 </div>
               </div>
+
+              {warnings.length > 0 && (
+                <div className="bg-amber-950/30 border-b border-amber-900/50 px-6 py-2 flex items-center gap-3">
+                  <Zap className="w-4 h-4 text-amber-500 animate-pulse" />
+                  <div className="flex-1 overflow-x-auto whitespace-nowrap scrollbar-hide">
+                    <span className="text-xs font-medium text-amber-400 mr-2">Potential Issues Detected:</span>
+                    {warnings.map((w, i) => (
+                      <span key={i} className="text-[10px] bg-amber-900/40 text-amber-200 px-2 py-0.5 rounded mr-2 border border-amber-800/50">
+                        {w}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-2">
                 <div className="flex flex-col border-r border-zinc-800">
