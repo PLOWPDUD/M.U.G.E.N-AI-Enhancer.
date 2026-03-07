@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Dispatch, SetStateAction } from "react";
 import { GoogleGenAI } from "@google/genai";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
@@ -13,6 +13,31 @@ import { Loader2, Download, Cpu, Zap, Shield, Swords, Terminal, FileText, Clock,
 import { cn } from "./lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import { EXAMPLE_CMD, EXAMPLE_CNS } from "./lib/exampleData";
+
+// Hook for persisting state to localStorage
+function useLocalStorage<T>(key: string, initialValue: T): [T, Dispatch<SetStateAction<T>>] {
+  const [storedValue, setStoredValue] = useState<T>(() => {
+    try {
+      const item = window.localStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch (error) {
+      console.error(error);
+      return initialValue;
+    }
+  });
+
+  const setValue = (value: T | ((val: T) => T)) => {
+    try {
+      const valueToStore = value instanceof Function ? value(storedValue) : value;
+      setStoredValue(valueToStore);
+      window.localStorage.setItem(key, JSON.stringify(valueToStore));
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  return [storedValue, setValue as Dispatch<SetStateAction<T>>];
+}
 
 interface AIVersion {
   id: string;
@@ -31,27 +56,27 @@ interface AIVersion {
 export default function App() {
   const [cnsFile, setCnsFile] = useState<File | null>(null);
   const [cmdFile, setCmdFile] = useState<File | null>(null);
-  const [customInstructions, setCustomInstructions] = useState("");
-  const [defensiveLevel, setDefensiveLevel] = useState(1);
-  const [spamLevel, setSpamLevel] = useState(1);
+  const [customInstructions, setCustomInstructions] = useLocalStorage<string>("customInstructions", "");
+  const [defensiveLevel, setDefensiveLevel] = useLocalStorage<number>("defensiveLevel", 1);
+  const [spamLevel, setSpamLevel] = useLocalStorage<number>("spamLevel", 1);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentStatus, setCurrentStatus] = useState<string>("");
   const [logs, setLogs] = useState<string[]>([]);
   const [resultZip, setResultZip] = useState<Blob | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [versions, setVersions] = useState<AIVersion[]>([]);
-  const [aiVar, setAiVar] = useState(59);
+  const [versions, setVersions] = useLocalStorage<AIVersion[]>("versions", []);
+  const [aiVar, setAiVar] = useLocalStorage<number>("aiVar", 59);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [versionName, setVersionName] = useState("");
   const [compareVersions, setCompareVersions] = useState<[AIVersion, AIVersion] | null>(null);
-  const [generatedCmd, setGeneratedCmd] = useState("");
-  const [generatedCns, setGeneratedCns] = useState("");
-  const [generatedHelpers, setGeneratedHelpers] = useState("");
-  const [historyState, setHistoryState] = useState<{
+  const [generatedCmd, setGeneratedCmd] = useLocalStorage<string>("generatedCmd", "");
+  const [generatedCns, setGeneratedCns] = useLocalStorage<string>("generatedCns", "");
+  const [generatedHelpers, setGeneratedHelpers] = useLocalStorage<string>("generatedHelpers", "");
+  const [historyState, setHistoryState] = useLocalStorage<{
     items: { cmd: string; cns: string; helpers: string }[];
     index: number;
-  }>({ items: [], index: -1 });
+  }>("historyState", { items: [], index: -1 });
   const [warnings, setWarnings] = useState<string[]>([]);
   const isInternalChange = useRef(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -59,12 +84,12 @@ export default function App() {
   const validateCode = (cmd: string, cns: string, helpers: string) => {
     const newWarnings: string[] = [];
     
-    const checkBlock = (code: string, name: string) => {
+    const checkBlock = (code: string, name: string, isCmd: boolean = false) => {
       if (code.match(/\[Statedef\s+[^\]]*\]/i)) {
         newWarnings.push(`${name}: Contains a [Statedef] block. This will cause a crash if injected into -1/-2. Move it to HELPERS.`);
       }
 
-      const controllers = code.split(/\[State[^\]]*\]/i);
+      const controllers = code.split(/\[State.*?\]/i);
       controllers.shift(); // Remove content before first controller
       
       controllers.forEach((ctrl, i) => {
@@ -100,6 +125,15 @@ export default function App() {
           if (hasTrigger2 && !hasTrigger1) {
             newWarnings.push(`${name}: Controller #${i + 1} has 'trigger2' but no 'trigger1'.`);
           }
+
+          // Check for AI Guard in CMD
+          if (isCmd) {
+            const aiGuardRegex = new RegExp(`var\\s*\\(\\s*${aiVar}\\s*\\)`, 'i');
+            const hasAiGuard = triggerLines.some(l => l.toLowerCase().startsWith('triggerall') && aiGuardRegex.test(l));
+            if (!hasAiGuard) {
+               newWarnings.push(`${name}: Controller #${i + 1} is missing 'triggerall = var(${aiVar})'. The AI will play for you!`);
+            }
+          }
         }
 
         // 3. Check for mandatory parameters based on type
@@ -117,8 +151,8 @@ export default function App() {
       });
     };
 
-    checkBlock(cmd, "CMD");
-    checkBlock(cns, "CNS");
+    checkBlock(cmd, "CMD", true);
+    checkBlock(cns, "CNS", false);
 
     if (helpers) {
       const helperDefs = helpers.split(/\[Statedef\s+(\d+)\]/i);
@@ -167,46 +201,62 @@ export default function App() {
   };
 
   const fixSyntax = () => {
-    const fixBlock = (code: string) => {
-      const controllers = code.split(/(\[State[^\]]*\])/i);
-      let fixed = controllers[0]; // Content before first state
+    const fixBlock = (code: string, isCmd: boolean = false) => {
+      const parts = code.split(/(\[State.*?\])/i);
+      let fixed = parts[0] || ""; 
       
-      for (let i = 1; i < controllers.length; i += 2) {
-        const header = controllers[i];
-        let body = controllers[i + 1] || "";
+      for (let i = 1; i < parts.length; i += 2) {
+        const header = parts[i];
+        const body = parts[i + 1] || "";
         
         const lines = body.split('\n').map(l => l.trim()).filter(l => l);
-        const newLines = [...lines];
+        
+        // Separate lines by type
+        const typeLines = lines.filter(l => l.toLowerCase().startsWith('type'));
+        const triggerAlls = lines.filter(l => l.toLowerCase().startsWith('triggerall'));
+        const triggerOthers = lines.filter(l => l.toLowerCase().startsWith('trigger') && !l.toLowerCase().startsWith('triggerall'));
+        const otherLines = lines.filter(l => !l.toLowerCase().startsWith('type') && !l.toLowerCase().startsWith('trigger'));
 
         // 1. Ensure 'type' exists
-        if (!lines.some(l => l.toLowerCase().startsWith('type'))) {
-          newLines.unshift('type = Null');
+        if (typeLines.length === 0) {
+          typeLines.push('type = Null; Fixed by AI Studio');
         }
 
-        // 2. Ensure 'trigger1' exists if no triggers at all
-        if (!lines.some(l => l.toLowerCase().startsWith('trigger'))) {
-          newLines.push('trigger1 = 1');
+        // 2. Ensure AI Guard exists for CMD states
+        if (isCmd) {
+          const aiGuardRegex = new RegExp(`var\\s*\\(\\s*${aiVar}\\s*\\)`, 'i');
+          const hasAiGuard = triggerAlls.some(l => aiGuardRegex.test(l));
+          
+          if (!hasAiGuard) {
+            triggerAlls.unshift(`triggerall = var(${aiVar}) > 0 ; Added AI Guard`);
+          }
         }
 
-        // 3. Fix trigger order (triggerall first)
-        const triggerAlls = newLines.filter(l => l.toLowerCase().startsWith('triggerall'));
-        const triggerOthers = newLines.filter(l => l.toLowerCase().startsWith('trigger') && !l.toLowerCase().startsWith('triggerall'));
-        const nonTriggers = newLines.filter(l => !l.toLowerCase().startsWith('trigger'));
+        // 3. Ensure at least one trigger exists
+        if (triggerAlls.length === 0 && triggerOthers.length === 0) {
+          triggerOthers.push('trigger1 = 0 ; Prevent accidental activation');
+        }
+
+        // Reconstruct block: Type -> TriggerAlls -> TriggerOthers -> Rest
+        const newBody = [
+          ...typeLines,
+          ...triggerAlls,
+          ...triggerOthers,
+          ...otherLines
+        ].join('\n');
         
-        const finalLines = [...nonTriggers.filter(l => l.toLowerCase().startsWith('type')), ...triggerAlls, ...triggerOthers, ...nonTriggers.filter(l => !l.toLowerCase().startsWith('type'))];
-        
-        fixed += header + "\n" + finalLines.join("\n") + "\n\n";
+        fixed += `${header}\n${newBody}\n\n`;
       }
       return fixed.trim();
     };
 
-    const fixedCmd = fixBlock(generatedCmd);
-    const fixedCns = fixBlock(generatedCns);
+    const fixedCmd = fixBlock(generatedCmd, true);
+    const fixedCns = fixBlock(generatedCns, false);
     
     setGeneratedCmd(fixedCmd);
     setGeneratedCns(fixedCns);
     addToHistory(fixedCmd, fixedCns, generatedHelpers);
-    addLog("Applied automatic syntax fixes for Ikemen GO compatibility.");
+    addLog("Applied automatic syntax fixes: Added AI Guards & fixed trigger order.");
   };
 
   const undo = () => {
@@ -330,12 +380,13 @@ CRITICAL IKEMEN GO COMPATIBILITY RULES (MANDATORY):
 5. **VARSET/VARADD**: Must include both 'v =' (variable index) and 'value ='.
 6. **CHANGESTATE/SELFSTATE**: Must include 'value ='.
 7. **NO STATEDEF**: Do not include [Statedef] headers in CMD_TRIGGERS or CNS_STATES.
+8. **AI ACTIVATION GUARD**: EVERY generated [State] in the CMD file MUST include 'triggerall = var(${aiVar}) > 0' (or '!= 0') to ensure it ONLY activates when the AI is in control. This is CRITICAL to prevent the AI from playing for the human user.
 
 USER PREFERENCES:
 - DEFENSIVE LEVEL: ${defensiveLevel}/10.
 - SPAM/AGGRESSION LEVEL: ${spamLevel}/10.
 - CUSTOM GOALS: ${customInstructions ? customInstructions : "Balanced gameplay"}
-- AI VARIABLE: var(${aiVar})
+- AI VARIABLE: var(${aiVar}) (Use this variable to check if AI is active)
 
 OUTPUT FORMAT:
 Return ONLY the NEW code to be added, wrapped in these delimiters:
